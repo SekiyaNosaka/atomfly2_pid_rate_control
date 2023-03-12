@@ -1,0 +1,28 @@
+#ifndef PID_HPP
+#define PID_HPP
+
+class PID
+{
+  private:
+    float m_kp;       // Pゲイン
+    float m_ki;       // Iゲイン
+    float m_kd;       // Dゲイン
+    //float m_w;        // 取得される計測値
+    //float m_target_w; // 制御対象の目標値
+    float m_err;      // 目標値と計測値との誤差
+    float m_err_0;    // 一時刻前の誤差
+    float m_err_sum;  // 誤差の蓄積変数
+    float m_diff;     // 誤差の微分用変数
+  public:
+    PID();
+    ~PID();
+    void setParam(float kp, float ki, float kd);
+    void assignError(float err, float err_0);
+    void allReset();
+    void iSeriesReset();
+    void dSeriesReset();
+    void accumulateError(float step);
+    float calcPIDControl(float step);
+};
+
+#endif

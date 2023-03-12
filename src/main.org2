@@ -1,0 +1,290 @@
+#include <math.h>
+#include <Arduino.h>
+#include <M5Atom.h>
+#include "rc.hpp"
+#include "sensor.hpp"
+#include "pid.hpp"
+
+const uint32_t Freq = 100000;
+const uint8_t nBits = 8;
+const uint8_t PIN_FL = 22;
+const uint8_t PIN_FR = 19;
+const uint8_t PIN_RL = 23;
+const uint8_t PIN_RR = 33;
+const uint8_t PWM_CH_FL = 0;
+const uint8_t PWM_CH_FR = 1;
+const uint8_t PWM_CH_RL = 2;
+const uint8_t PWM_CH_RR = 3;
+
+PID for_p;
+PID for_q;
+PID for_r;
+
+const float UGAIN = 250.0f;
+const float CTRL_LIMIT = 0.7f;
+const uint8_t CYCLE = 3;
+float roll;
+float pitch;
+float yaw;
+float thrust_0;
+float thrust;
+float t1, t2, t3, t4;
+
+float kp = 0.175f;
+float ki = 0.0009f;
+float kd = 0.00005f;
+
+float target_wp = 0.0f;
+float target_wq = 0.0f;
+float target_wr = 0.0f;
+float err_wp = 0.0f;
+float err_wq = 0.0f;
+float err_wr = 0.0f;
+float err_wp_0 = 0.0f;
+float err_wq_0 = 0.0f;
+float err_wr_0 = 0.0f;
+float err_wp_sum = 0.0f;
+float err_wq_sum = 0.0f;
+float err_wr_sum = 0.0f;
+float t = 0.0f;
+
+void limitThrust0(float *thr_0);
+void limitThrust(float *thr);
+void limitRoll(float *roll);
+void limitPitch(float *pitch);
+void limitYaw(float *yaw);
+float limitValue(float val);
+
+void setup()
+{
+  ledcSetup(PWM_CH_FL, Freq, nBits);
+  ledcSetup(PWM_CH_FR, Freq, nBits);
+  ledcSetup(PWM_CH_RL, Freq, nBits);
+  ledcSetup(PWM_CH_RR, Freq, nBits);
+  ledcAttachPin(PIN_FL, PWM_CH_FL);
+  ledcAttachPin(PIN_FR, PWM_CH_FR);
+  ledcAttachPin(PIN_RL, PWM_CH_RL);
+  ledcAttachPin(PIN_RR, PWM_CH_RR);
+  rc_init();
+  sensor_init();
+  for_p.set_parameter(0.5f, 0.3f, 0.023, 0.125f, 0.0025f);
+  for_q.set_parameter(0.5f, 0.3f, 0.023, 0.125f, 0.0025f);
+  for_r.set_parameter(0.5f, 0.3f, 0.023, 0.125f, 0.0025f);
+  Serial.begin(115200); // baudrate -> 115200
+  delay(1000);
+}
+
+void loop()
+{
+  sensor_read();
+
+  roll  = Stick[AILERON];
+  pitch = Stick[ELEVATOR];
+  yaw   = Stick[RUDDER];
+  thrust_0 = Stick[THROTTLE];
+  thrust = 0.0f;
+
+  limitThrust0(&thrust_0);
+  limitThrust(&thrust);
+  limitRoll(&roll);
+  limitPitch(&pitch);
+  limitYaw(&yaw);
+
+  if (thrust_0 <= 0.1){
+    for_p.reset();
+    for_q.reset();
+    for_r.reset();
+  }
+  else{
+    target_wp = (PI/2.0)*roll;  // 適当に(pi/2)でスケーリング
+    target_wq = (PI/2.0)*pitch; // 適当に(pi/2)でスケーリング
+    target_wr = (PI/2.0)*yaw;   // 適当に(pi/2)でスケーリング
+
+    err_wp = target_wp - Wp;
+    err_wq = target_wq - Wq;
+    err_wr = target_wr - Wr;
+
+    /*
+    // 積分用の誤差蓄積計算
+    if (t != 2.0){
+      err_wp_sum += (CYCLE*0.001)*err_wp; // 数値積分(短冊系), CYCLE*0.001は制御周期[s](理想的)
+      err_wq_sum += (CYCLE*0.001)*err_wq; // 数値積分(短冊系), CYCLE*0.001は制御周期[s](理想的)
+      err_wr_sum += (CYCLE*0.001)*err_wr; // 数値積分(短冊系), CYCLE*0.001は制御周期[s](理想的)
+    }
+    else if (t > 2.0){
+      err_wp_sum = 0.0;
+      err_wq_sum = 0.0;
+      err_wr_sum = 0.0;
+      t = 0.0; // 経過時間キャッシュをリフレッシュ
+    }
+
+    // PID制御
+    float u_p = kp*(err_wp) + ki*(err_wp_sum) + kd*((err_wp - err_wp_0)/CYCLE*0.001); // rollと同比(同義)
+    float u_q = kp*(err_wq) + ki*(err_wq_sum) + kd*((err_wq - err_wq_0)/CYCLE*0.001); // pitchと同比(同義)
+    float u_r = kp*(err_wr) + ki*(err_wr_sum) + kd*((err_wr - err_wr_0)/CYCLE*0.001); // yawと同比(同義)
+    //Serial.printf("%f %f %f\n", u_p, u_q, u_r);
+    */
+
+    // Rate.Control PID
+    float u_p = for_p.update(err_wp);
+    float u_q = for_q.update(err_wq);
+    float u_r = for_r.update(err_wr);
+
+    // ミキシング計算
+    if(thrust_0 > 0.02f){
+      t1 = UGAIN*(thrust_0 + (thrust - u_p + u_q - u_r)/4.0);
+      t2 = UGAIN*(thrust_0 + (thrust - u_p - u_q + u_r)/4.0);
+      t3 = UGAIN*(thrust_0 + (thrust + u_p - u_q - u_r)/4.0);
+      t4 = UGAIN*(thrust_0 + (thrust + u_p + u_q + u_r)/4.0);
+      /*
+      t1 = UGAIN*(thrust_0 + (thrust - u_p + u_q + u_r)/4.0);
+      t2 = UGAIN*(thrust_0 + (thrust - u_p - u_q - u_r)/4.0);
+      t3 = UGAIN*(thrust_0 + (thrust + u_p - u_q + u_r)/4.0);
+      t4 = UGAIN*(thrust_0 + (thrust + u_p + u_q - u_r)/4.0);
+      */
+    }
+    else{
+      t1 = 0.0f;
+      t2 = 0.0f;
+      t3 = 0.0f;
+      t4 = 0.0f;
+    }
+
+    t1 = limitValue(t1);
+    t2 = limitValue(t2);
+    t3 = limitValue(t3);
+    t4 = limitValue(t4);
+
+    ledcWrite(PWM_CH_FR, (uint32_t)t1);
+    ledcWrite(PWM_CH_FL, (uint32_t)t4);
+    ledcWrite(PWM_CH_RR, (uint32_t)t2);
+    ledcWrite(PWM_CH_RL, (uint32_t)t3);
+
+    err_wp_0 = err_wp;
+    err_wq_0 = err_wq;
+    err_wr_0 = err_wr;
+  }
+
+  delay(CYCLE);
+  t += (CYCLE*0.001);
+}
+
+
+void limitThrust0(float *thr_0)
+{
+  if (*thr_0 > 0.8f){
+    *thr_0 = 0.8f;
+  }
+  else if (*thr_0 < 0.0f){
+    *thr_0 = 0.0f;
+  }
+}
+
+void limitThrust(float *thr)
+{
+  if(*thr > CTRL_LIMIT){
+    *thr = CTRL_LIMIT;
+  }
+  else if(*thr < 0.0f){
+    *thr = 0.0f;
+  }
+}
+
+void limitRoll(float *roll)
+{
+  if(*roll > CTRL_LIMIT){
+    *roll = CTRL_LIMIT;
+  }
+  if(*roll < -CTRL_LIMIT){
+    *roll = -CTRL_LIMIT;
+  }
+
+}
+
+void limitPitch(float *pitch)
+{
+  if(*pitch >  CTRL_LIMIT){
+    *pitch =  CTRL_LIMIT;
+  }
+  if(*pitch < -CTRL_LIMIT){
+    *pitch = -CTRL_LIMIT;
+  }
+
+}
+
+void limitYaw(float *yaw)
+{
+  if(*yaw > CTRL_LIMIT){
+    *yaw = CTRL_LIMIT;
+  }
+  if(*yaw < -CTRL_LIMIT){
+    *yaw = -CTRL_LIMIT;
+  }
+
+}
+
+float limitValue(float val)
+{
+  float max_val = pow(2, nBits) - 1;
+  float min_val = 0;
+
+  if (val>max_val){
+    val = max_val;
+  }
+  else if (val<min_val){
+    val = min_val;
+  }
+  return val;
+}
+
+
+/*
+void loop()
+{
+  uint8_t t_scale = 240;
+  uint8_t r_scale = 8;
+  uint8_t p_scale = 8;
+  uint8_t y_scale = 8;
+
+  float roll   = Stick[AILERON];
+  float pitch  = Stick[ELEVATOR];
+  float yaw    = Stick[RUDDER];
+  float thrust = Stick[THROTTLE];
+
+  float FL_val = t_scale*thrust + r_scale*roll + p_scale*pitch - y_scale*yaw;
+  float FR_val = t_scale*thrust - r_scale*roll + p_scale*pitch + y_scale*yaw;
+  float RL_val = t_scale*thrust + r_scale*roll - p_scale*pitch + y_scale*yaw;
+  float RR_val = t_scale*thrust - r_scale*roll - p_scale*pitch - y_scale*yaw;
+
+  FL_val = limitRange(FL_val);
+  FR_val = limitRange(FR_val);
+  RL_val = limitRange(RL_val);
+  RR_val = limitRange(RR_val);
+
+  ledcWrite(PWM_CH_FL, (uint8_t)FL_val);
+  ledcWrite(PWM_CH_FR, (uint8_t)FR_val);
+  ledcWrite(PWM_CH_RL, (uint8_t)RL_val);
+  ledcWrite(PWM_CH_RR, (uint8_t)RR_val);
+
+  delay(4);
+}
+*/
+
+/*
+void loop()
+{
+  int t;
+  double T = 2000;
+  double omega = (2*M_PI)/T;
+
+  for (t=0; t<=T; t=t+1){
+    ledcWrite(PWM_CH_FL, (uint8_t)204*sin(omega*t));
+    ledcWrite(PWM_CH_FR, (uint8_t)204*sin(omega*t));
+    ledcWrite(PWM_CH_RL, (uint8_t)204*sin(omega*t));
+    ledcWrite(PWM_CH_RR, (uint8_t)204*sin(omega*t));
+    delay(2);
+  }
+
+  delay(4);
+}
+*/

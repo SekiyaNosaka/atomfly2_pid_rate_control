@@ -1,0 +1,96 @@
+#include "pid.hpp"
+
+/*
+@brief PIDクラス内で使用する変数の初期化コンストラクタ
+*/
+PID::PID()
+{
+  m_kp = 0.1f;
+  m_ki = 0.005f;
+  m_kd = 0.00001f;
+
+  //m_w = 0.0f;
+  //m_target_w = 0.0f;
+  m_err = 0.0f;
+  m_err_0 = 0.0f;
+  m_err_sum = 0.0f;
+  m_diff = 0.0f;
+}
+
+/*
+@brief PIDクラスのデストラクタ
+*/
+PID::~PID()
+{
+}
+
+/*
+@brief PIDゲインの設定
+@param[in] kp Pゲイン
+@param[in] ki Iゲイン
+@param[in] kd Dゲイン
+*/
+void PID::setParam(float kp, float ki, float kd)
+{
+  m_kp = kp;
+  m_ki = ki;
+  m_kd = kd;
+}
+
+/*
+@brief 現在の誤差と一時刻前の誤差の割り当て
+@param[in] err   現在の誤差
+@param[in] err_0 一時刻前の誤差
+*/
+void PID::assignError(float err, float err_0)
+{
+  m_err = err;
+  m_err_0 = err_0;
+}
+
+/*
+@brief 誤差計算に関連する変数を全てリセット
+*/
+void PID::allReset()
+{
+  m_err = 0.0f;
+  m_err_0 = 0.0f;
+  m_err_sum = 0.0f;
+  m_diff = 0.0f;
+}
+
+/*
+@brief 積分用の誤差蓄積変数のリセット
+*/
+void PID::iSeriesReset()
+{
+  m_err_sum = 0.0f;
+}
+
+/*
+@brief 微分用の変数のリセット
+*/
+void PID::dSeriesReset()
+{
+  m_diff = 0.0f;
+}
+
+/*
+@brief 積分用に誤差蓄積する計算
+@param[in] step 周期(刻み幅)
+*/
+void PID::accumulateError(float step)
+{
+  m_err_sum += step * m_err;                 // 数値積分 (短冊系)
+  //m_err_sum += (m_err_0 + m_err)*step/2.0;   // 数値積分 (台形則)
+}
+
+/*
+@brief PID制御式の計算
+@param[in] step 周期(刻み幅)
+*/
+float PID::calcPIDControl(float step)
+{
+  m_diff = (m_err - m_err_0)/step;
+  return m_kp*(m_err) + m_ki*(m_err_sum) + m_kd*(m_diff);
+}
